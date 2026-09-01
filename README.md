@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".banner/kiki-banner.png" alt="kiki — 魔女的宅急便 · 生产级任务队列" />
+  <img src=".banner/kiki-banner.webp" alt="kiki — 魔女的宅急便 · 生产级任务队列" />
 </p>
 
 # kiki 🧹
