@@ -1,0 +1,42 @@
+# kiki 集成测试环境（go-implementation.md §10）
+#
+# cluster 节点向客户端/对端通告的地址必须是可路由 IP（Redis 不接受主机名）：
+#   export KIKI_CLUSTER_ANNOUNCE_IP=<宿主机 LAN IP>   # 本机测试
+#   docker compose -f docker-compose.test.yml up -d
+# 单机 redis:7.2（testcontainers 用）+ 4-master cluster（T12 冒烟）。
+# 用法：
+#   docker compose -f docker-compose.test.yml up -d
+#   KIKI_TEST_CLUSTER_ADDRS=127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003,127.0.0.1:7004 \
+#     go test -race -tags=integration ./integration/
+services:
+  redis-single:
+    image: redis:7.2
+    ports: ["6379:6379"]
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+
+  redis-node-1:
+    image: redis:7.2
+    ports: ["7001:7001", "17001:17001"]
+    extra_hosts: ["${KIKI_CLUSTER_ANNOUNCE_IP}:host-gateway"]
+    command: ["redis-server", "--port", "7001", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "2000", "--appendonly", "no", "--cluster-announce-ip", "${KIKI_CLUSTER_ANNOUNCE_IP}", "--cluster-announce-port", "7001", "--cluster-announce-bus-port", "17001"]
+  redis-node-2:
+    image: redis:7.2
+    ports: ["7002:7002", "17002:17002"]
+    extra_hosts: ["${KIKI_CLUSTER_ANNOUNCE_IP}:host-gateway"]
+    command: ["redis-server", "--port", "7002", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "2000", "--appendonly", "no", "--cluster-announce-ip", "${KIKI_CLUSTER_ANNOUNCE_IP}", "--cluster-announce-port", "7002", "--cluster-announce-bus-port", "17002"]
+  redis-node-3:
+    image: redis:7.2
+    ports: ["7003:7003", "17003:17003"]
+    extra_hosts: ["${KIKI_CLUSTER_ANNOUNCE_IP}:host-gateway"]
+    command: ["redis-server", "--port", "7003", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "2000", "--appendonly", "no", "--cluster-announce-ip", "${KIKI_CLUSTER_ANNOUNCE_IP}", "--cluster-announce-port", "7003", "--cluster-announce-bus-port", "17003"]
+  redis-node-4:
+    image: redis:7.2
+    ports: ["7004:7004", "17004:17004"]
+    extra_hosts: ["${KIKI_CLUSTER_ANNOUNCE_IP}:host-gateway"]
+    command: ["redis-server", "--port", "7004", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "2000", "--appendonly", "no", "--cluster-announce-ip", "${KIKI_CLUSTER_ANNOUNCE_IP}", "--cluster-announce-port", "7004", "--cluster-announce-bus-port", "17004"]
+
+  redis-cluster-init:
+    image: redis:7.2
+    depends_on: [redis-node-1, redis-node-2, redis-node-3, redis-node-4]
+    extra_hosts: ["${KIKI_CLUSTER_ANNOUNCE_IP}:host-gateway"]
+    command: ["/bin/sh", "-c", "sleep 3 && redis-cli --cluster create ${KIKI_CLUSTER_ANNOUNCE_IP}:7001 ${KIKI_CLUSTER_ANNOUNCE_IP}:7002 ${KIKI_CLUSTER_ANNOUNCE_IP}:7003 ${KIKI_CLUSTER_ANNOUNCE_IP}:7004 --cluster-replicas 0 --cluster-yes && echo 'cluster ready'"]
