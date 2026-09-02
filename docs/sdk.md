@@ -143,7 +143,39 @@ Run 返回
 
 全部指标与告警线见 [docs/operations.md](operations.md)；运维命令见 `kikictl --help`。
 
-## 7. FAQ
+## 7. 并发安全与独立部署
+
+**并发安全**：`NewQueue` 构造后的 `Queue` 可被任意多 goroutine 并发使用——生产 goroutine、消费 goroutine、多个 `Worker` 实例共享同一个 `Queue` 都没问题。可变共享状态只有两个原子标志（closed / scheduler 标记），脚本表与指标实现构造后不可变，底层经 go-redis 连接池（官方保证 goroutine-safe）执行；`-race` 下的黄金用例（T1 32 goroutine 并发 Reserve、T9 shutdown 并发等）持续覆盖。`Worker` 本身只做一件并发敏感的事：`Handle` 必须先于 `Run`（Run 之后再改 handler 行为未定义）。
+
+**生产者与消费者独立部署**：完全可行，这正是设计形态（design.md §2——kiki 是库，Producer 与 Worker 是两个角色 import 同一库直连 Redis，没有进程耦合）。唯一契约是**队列名 + payload 编码**（建议 payload 用版本化 JSON）。实操要点：
+
+| 事项 | 建议 |
+|---|---|
+| 消费者扩容 | 无状态水平扩：拉模型天然背压，worker id（host:pid:seq）天然唯一，无需选主、无需预注册 |
+| Scheduler 归属 | 默认每个消费进程的首个 Worker 自动内嵌（幂等无主，多跑无害）；生产侧进程建议 `SchedulerInterval: 0` 关闭，避免无谓的 Redis 轮询 |
+| **参数所有权** | 见下表——分服务后两侧的 `QueueOptions` 不再共享，配错即语义漂移 |
+| 混部版本 | `kikictl version` 探测；脚本随库编译期冻结，新旧 worker 共存期间写路径互相兼容（§12 升级纪律） |
+| 消费侧幂等 | 独立部署更显必要：`middlewares.Dedup` 或 DB 事务（§4），重复投递的最后防线在消费侧 |
+
+**分服务部署时的参数所有权**（谁执行谁配置）：
+
+| 参数 | 归属 | 漂移后果 |
+|---|---|---|
+| `MaxRetries` | **生产者**（入队时经 enqueue.lua 写死进 task hash） | 生产端调小 ⇒ 消费端看到的重试上限跟着变，DLQ 提前/延后 |
+| `MaxRedeliveries` / `Retention` / `DLQMaxLen` | **跑 Scheduler 的进程**（sweep/trimDLQ 的调用方） | 只有保留期不一致时表现为 hash 过早过期（`ErrGone`） |
+| `VisibilityTimeout`（队列上限） | **消费者**（vis 只在 reserve 时写入租约；钳制发生在消费进程自己的 Queue 上，不跨进程） | 无跨进程耦合，但建议两端按同一份 SRE 预算文档约定（心跳间隔 = vis/3 依赖它） |
+| vis 下调 / 心跳 / 退避 / 并发 / grace | 消费者（WorkerOptions） | 仅影响本消费进程行为，风险低 |
+| payload 上限 | 生产者（入队校验） | 消费端不校验 |
+
+## 8. 单队列吞吐上限与 ShardedQueue（v0.2 预告）
+
+队列名进入 hash tag `{qk:<name>}` ⇒ 该队列全部 key 绑定单一 cluster slot ⇒ **单队列吞吐封顶在单分片**（单机/Sentinel 下同理，上限是"单实例"）。加 Worker、加 Redis 节点都突破不了；不同队列名会自然散布到不同 slot。
+
+- 判定：积压时先分清"消费能力不足"（`oldest_ready_age` 增长但 Redis 分片未饱和 → 加消费者有效）与"已达单队列上限"（分片 CPU/脚本执行饱和 → 加消费者无效）；
+- 出路（v0.2 `ShardedQueue`，go-implementation.md §3.4）：逻辑队列拆 `name#0..N` 物理队列（不同 hash tag → 不同 slot），SDK 提供合并视图——按任务 id 哈希路由（同 id 恒落同分片）、跨分片联合 reserve、Stats/指标/Scheduler/DLQ 聚合。注意跨分片**没有严格全局 FIFO**（各分片独立弹出），将诚实写进文档；
+- 量级参照：design.md §9（单分片 5–8 万 ops/s 上限）；实测见 [docs/benchmarks.md](benchmarks.md)。
+
+## 9. FAQ
 
 **Q：任务处理一半进程被 kill -9 会怎样？** 租约到期 → sweep 重投（`ver+1` 毒杀旧 token）。副作用可能已发生——这正是 §4 存在的原因。
 

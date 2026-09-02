@@ -12,6 +12,7 @@ kikictl / sidecar（运维通道）───────────────
 ```
 
 - **Worker 默认自动内嵌 Scheduler**（首个实例），多实例并发跑 sweep/promote 无害（幂等无主）。若所有进程都关掉 Scheduler 且无人接手，SCHEDULED 与超时租约会滞留——这是配置错误，靠 `kiki_oldest_ready_seconds` 与 `kiki_depth{kind="lease"}` 告警暴露，不要靠造主节点来掩盖。
+- **生产者与消费者可（也建议可时）分服务部署**：两个角色 import 同一库直连 Redis，无进程耦合；唯一契约是队列名 + payload 编码。`Queue` 构造后并发安全（任意多 goroutine、多 Worker 共享）。扩容消费者 = 无状态水平扩，无需选主。**分服务后的参数所有权**见 [sdk.md §7](sdk.md#7-并发安全与独立部署)（`MaxRetries` 归生产者入队写死、`MaxRedeliveries/Retention/DLQMaxLen` 归跑 Scheduler 的进程、vis 与心跳/退避/并发归消费者）。
 - 版本探测：`kikictl version` 汇报库版本与 schema 版本；滚动升级纪律见 §6。
 
 ## 2. Redis 配置建议
@@ -66,6 +67,10 @@ Hooks（`OnDLQ/OnFenced/OnPanic/OnHeartbeatLost`）负责"哪个"：接告警路
 - **内存**：task hash ≈ payload + ~300B 元数据；ZSET entry ≈ 100B。100 万在途（1KB payload）≈ 1.5GB。**payload > 100KB 必须改存对象存储引用**——纪律不是建议。
 - **RTT 预算**：enqueue 1 + reserve 1（批量摊薄）+ heartbeat ⌈时长/(vis/3)⌉ + complete/fail 1。
 - **吞吐**：单队列 = 单分片上限，实测见 [docs/benchmarks.md](benchmarks.md)；扩容走子分片。
+- **扩容判定树**（积压时按序检查）：
+  1. 消费者侧——实例数/并发是否还有余量？有 ⇒ 水平扩 Worker（无状态，直接加）；
+  2. Redis 分片侧——该队列所在分片的 CPU / `instantaneous_ops_per_sec` 是否饱和？未饱和但 ready 深度仍涨 ⇒ 检查 handler 长尾（`kiki_handler_duration_seconds`）与 vis/心跳配置；
+  3. 两者都饱和 ⇒ **已达单队列单分片上限**（hash tag 决定，加消费者与加 Redis 节点均无效）⇒ 唯一出路是子分片 `name#0..N`（v0.2 ShardedQueue 合并视图，见 [sdk.md §8](sdk.md#8-单队列吞吐上限与-shardedqueuev02-预告)）；过渡期可先按业务键前缀手动拆成多个队列名分流。
 - **保留期**：终态 task hash 靠 EXPIRE（默认 24h）；DLQ Stream `XTRIM MAXLEN ~` 封顶（默认 10000）；历史审计依赖 Stream 而非 hash 永生。
 
 ## 6. 升级与兼容
@@ -79,7 +84,7 @@ Hooks（`OnDLQ/OnFenced/OnPanic/OnHeartbeatLost`）负责"哪个"：接告警路
 
 | 症状 | 先看 | 处置 |
 |---|---|---|
-| ready 深度涨、worker 空转 | `kikictl stats`、oldest_ready_age | 加 Worker 实例/并发；确认内嵌 Scheduler 没被全部关闭 |
+| ready 深度涨、worker 空转 | `kikictl stats`、oldest_ready_age | 按 §5 扩容判定树加 Worker 实例/并发；确认内嵌 Scheduler 没被全部关闭 |
 | `kiki_fenced_total` 突增 | `kikictl inspect <q> <id>` 的 tries/ver、handler 时长 vs vis | 调大 vis（仅限下调上限内）或修 handler 长尾；长任务靠心跳不是调大 vis |
 | 任务卡 SCHEDULED 不动 | 有没有进程在跑 promote | 启动任一 Worker 或 `kikictl sweep <q>` |
 | lease 深度高、无人认领 | worker 是否崩溃后未重启 | sweep 会自动重投；确认 `MaxRedeliveries` 未被反复触发进 DLQ |

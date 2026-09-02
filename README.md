@@ -75,3 +75,5 @@ _ = w.Run(ctx)
 docker run --rm -p 6379:6379 redis:7.2
 go run ./example
 ```
+
+面试考核点（并发控制 / 状态机 / 超时租期 / 毒丸 DLQ）的逐项对照示例见 [example/README.md](example/README.md)。
