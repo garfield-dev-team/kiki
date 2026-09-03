@@ -30,6 +30,10 @@ var (
 	ErrInvalidArgument = errors.New("kiki: invalid argument")
 	// ErrNoHandler — Worker 未设置 handler 即 Run。
 	ErrNoHandler = errors.New("kiki: worker has no handler")
+	// ErrNoShard — 终结写携带的 Shard 句柄越界（Task 来自单队列、跨版本
+	// 序列化丢失句柄、或手工构造 Task）。处置同级 ErrFenced：不重试、不吞
+	// （docs/sharded-queue.md §5.3）。
+	ErrNoShard = errors.New("kiki: task shard handle out of range")
 	// ErrClosed — Queue 已关闭后仍被调用。
 	ErrClosed = errors.New("kiki: queue closed")
 )

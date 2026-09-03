@@ -19,7 +19,8 @@ import (
 )
 
 // Version 汇报库版本（脚本随库编译期冻结，见 go-implementation.md §12）。
-const Version = "v0.1.0"
+// v0.2 起新增 ShardedQueue 合成层；脚本与状态机自 v0.1.0 起零改动。
+const Version = "v0.2.0"
 
 // schemaVersion 写入每个 task hash 的 sv 字段，供未来迁移脚本分批 HSET。
 const schemaVersion = 1
@@ -151,10 +152,13 @@ func (q *Queue) Client() redis.UniversalClient { return q.eng.Client() }
 // Reserve 领取至多 max 个任务（进程级默认 owner，独立消费者/测试用）。
 // Worker 运行时经 ReserveFor 以自身 worker id 领取。vis 不可超过队列上限。
 func (q *Queue) Reserve(ctx context.Context, vis time.Duration, max int) ([]Task, error) {
-	return q.ReserveFor(ctx, q.defaultOwner(), vis, max)
+	return q.ReserveFor(ctx, defaultOwner(), vis, max)
 }
 
-func (q *Queue) defaultOwner() string {
+// shardNone 是"无分片句柄"标记：单队列 Task/DLQEntry 的 Shard 恒为它。
+const shardNone = -1
+
+func defaultOwner() string {
 	host, err := os.Hostname()
 	if err != nil {
 		host = "?"
@@ -229,6 +233,7 @@ func (q *Queue) ReserveFor(ctx context.Context, worker string, vis time.Duration
 			Tries:         int(triesN),
 			Ver:           verN,
 			LeaseDeadline: time.UnixMilli(dlMs),
+			Shard:         shardNone, // 单队列：无分片句柄
 		})
 	}
 	return out, nil
@@ -543,6 +548,8 @@ type DLQEntry struct {
 	Pri        int
 	Via        string // fail / sweep / abandon
 	TS         time.Time
+	// Shard 是死信所在分片（SDK 填充，replay 的路由句柄；单队列恒为 -1）。
+	Shard int
 }
 
 // ListDLQ 浏览死信快照（kikictl dlq ls / replay 的数据源）。
@@ -556,7 +563,7 @@ func (q *Queue) ListDLQ(ctx context.Context, count int64) ([]DLQEntry, error) {
 	}
 	out := make([]DLQEntry, 0, len(msgs))
 	for _, m := range msgs {
-		e := DLQEntry{StreamID: m.ID}
+		e := DLQEntry{StreamID: m.ID, Shard: shardNone}
 		get := func(k string) string { s, _ := m.Values[k].(string); return s }
 		e.ID = get("id")
 		e.Payload = []byte(get("payload"))
@@ -646,3 +653,19 @@ type SweepStats struct {
 	Requeued     int
 	DeadLettered int
 }
+
+// ---- engine 接口的 *Queue 侧实现 ----
+//
+// engine 是 Worker 运行时的完整依赖面（worker.go）：*Queue 与 *ShardedQueue
+// 都满足它，Worker 因此不感知自己跑在单队列还是分片合并视图上。
+
+func (q *Queue) engineName() string               { return q.name }
+func (q *Queue) engineVisCap() time.Duration      { return q.visCap }
+func (q *Queue) engineMetrics() metrics.Interface { return q.metr }
+func (q *Queue) engineLogger() *slog.Logger       { return q.log }
+
+func (q *Queue) newScheduler(opts SchedulerOptions) schedulerRunner {
+	return q.NewScheduler(opts)
+}
+
+var _ engine = (*Queue)(nil)

@@ -60,8 +60,8 @@ type WorkerOptions struct {
 // Worker 是消费侧运行时：slot loop × Concurrency，租约保活与终结写全部
 // 汇聚到 Terminator。任务的状态迁移只发生在 Redis 脚本里。
 type Worker struct {
-	q       *Queue
-	api     queueAPI // 可注入替身（-race 单测）；生产恒为 q
+	eng     engine   // 拥有者：*Queue 或 *ShardedQueue（Close 归它）
+	api     queueAPI // 可注入替身（-race 单测）；生产恒为 eng
 	opts    WorkerOptions
 	id      string
 	log     *slog.Logger
@@ -107,6 +107,25 @@ type queueAPI interface {
 	Release(ctx context.Context, t Task) error
 }
 
+// engine 是 Worker 运行时的完整依赖面：queueAPI + 归属信息 + Scheduler
+// 内嵌点。*Queue 与 *ShardedQueue（docs/sharded-queue.md §7.3）都满足它，
+// Worker 因此对"单队列 / 分片合并视图"无感知。
+type engine interface {
+	queueAPI
+	Close() error
+	engineName() string          // meta.queue 与日志标签（合并视图取逻辑名）
+	engineVisCap() time.Duration // vis 钳制上限
+	engineMetrics() metrics.Interface
+	engineLogger() *slog.Logger
+	acquireScheduler() bool // "首个 Worker 内嵌 Scheduler"的唯一授权点
+	newScheduler(opts SchedulerOptions) schedulerRunner
+}
+
+// schedulerRunner 抽象单/多分片 Scheduler 的阻塞运行（ctx 取消退出）。
+type schedulerRunner interface {
+	Run(ctx context.Context)
+}
+
 var workerSeq atomic.Int64
 
 func newWorkerID() string {
@@ -119,13 +138,20 @@ func newWorkerID() string {
 
 // NewWorker 构造 Worker（先 Handle 再 Run）。
 func (q *Queue) NewWorker(opts WorkerOptions) *Worker {
+	return newWorkerFor(q, opts)
+}
+
+// newWorkerFor 是两个构造器（单队列 / ShardedQueue）共享的装配点：默认值
+// 解析必须写回 w.opts（slot loop / heartbeat / shutdown 都读它）。
+func newWorkerFor(eng engine, opts WorkerOptions) *Worker {
 	log := opts.Logger
 	if log == nil {
-		log = q.log
+		log = eng.engineLogger()
 	}
+	visCap := eng.engineVisCap()
 	vis := opts.VisibilityTimeout
 	if vis <= 0 {
-		vis = q.visCap
+		vis = visCap
 	}
 	hb := opts.HeartbeatInterval
 	if hb == 0 {
@@ -149,27 +175,26 @@ func (q *Queue) NewWorker(opts WorkerOptions) *Worker {
 	}
 	id := newWorkerID()
 	w := &Worker{
-		q:          q,
-		api:        q,
+		eng:        eng,
+		api:        eng,
 		opts:       opts,
 		id:         id,
 		log:        log.With("worker", id),
 		hooks:      opts.Hooks,
-		metr:       q.metr,
+		metr:       eng.engineMetrics(),
 		backoff:    backoff,
 		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
 		shutdownCh: make(chan struct{}),
 		runDone:    make(chan struct{}),
 	}
-	// 解析后的默认值必须写回 w.opts：slot loop / heartbeat / shutdown 都读它。
 	if w.opts.VisibilityTimeout <= 0 {
 		w.opts.VisibilityTimeout = vis
 	}
 	// vis 高于队列上限则钳制：worker 可下调不可上调（§9）。
-	if w.opts.VisibilityTimeout > q.visCap {
-		q.log.Warn("worker visibility timeout clamped to queue cap; use heartbeat for long tasks",
-			"requested", w.opts.VisibilityTimeout.String(), "cap", q.visCap.String())
-		w.opts.VisibilityTimeout = q.visCap
+	if w.opts.VisibilityTimeout > visCap {
+		log.Warn("worker visibility timeout clamped to queue cap; use heartbeat for long tasks",
+			"requested", w.opts.VisibilityTimeout.String(), "cap", visCap.String())
+		w.opts.VisibilityTimeout = visCap
 	}
 	w.opts.HeartbeatInterval = hb
 	w.opts.PollInterval = poll
@@ -198,8 +223,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		go w.slotLoop(dctx)
 	}
 	// 首个 Worker 自动内嵌 Scheduler（§5）；后到的 Worker 不再内嵌。
-	if w.opts.SchedulerInterval != 0 && w.q.acquireScheduler() {
-		sched := w.q.NewScheduler(SchedulerOptions{
+	// 分片合并视图下这一授权点一次拉起全部 N 个分片级 scheduler。
+	if w.opts.SchedulerInterval != 0 && w.eng.acquireScheduler() {
+		sched := w.eng.newScheduler(SchedulerOptions{
 			Interval: w.opts.SchedulerInterval,
 			OnDLQ:    w.hooks.OnDLQ,
 		})
@@ -239,7 +265,7 @@ func (w *Worker) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), w.opts.ShutdownGrace)
 	defer cancel()
 	err := w.Shutdown(ctx)
-	_ = w.q.Close()
+	_ = w.eng.Close()
 	return err
 }
 
@@ -324,7 +350,7 @@ func (w *Worker) process(slotCtx context.Context, t Task) {
 
 	fenced := &atomic.Bool{}
 	ctx := withMeta(handlerCtx, meta{
-		queue:   w.q.name,
+		queue:   w.eng.engineName(),
 		task:    t,
 		fenced:  fenced,
 		metrics: w.metr,

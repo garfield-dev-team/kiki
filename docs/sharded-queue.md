@@ -1,10 +1,9 @@
 # ShardedQueue 技术方案（v0.2）
 
-> 状态：**方案定稿，未实施**。本文档是 v0.2 子分片能力的规范源头。
+> 状态：**已实施**（实现：`sharded.go`；验证：integration T14–T17 + 等价性矩阵）。本文档是 v0.2 子分片能力的规范源头。
 > 地位与裁决：状态机语义全部继承 design.md（v0.2 不改任何转移、不改任何脚本）；
 > 本文档只规范"逻辑队列 → N 物理队列"的合成层。裁决顺序沿用 AGENTS §0：
 > `scripts/` + integration > design.md > 本文档 > go-implementation.md。
-> 实施时的三处同步义务照旧：本文档（规范）→ 复用 scripts/（实现，零改动）→ integration T14–T17 + 等价性矩阵（验证）。
 
 ## 0. 一句话
 
@@ -213,7 +212,7 @@ type ShardedStats struct {
 }
 ```
 
-- 指标：聚合序列沿用 v1（`queue` 标签 = 逻辑名）；每分片增加 `shard` 标签序列。基数上界 = 队列数 × N ≤ 64（§11.2），可控。
+- 指标（实施形态）：分片内的脚本路径计数沿用 v1 序列，`queue` 标签 = **物理名**（`orders#3`，不加 shard 标签——物理名本身已含分片号，避免双标签冗余）；Worker reserve 计数与 handler 直方图用**逻辑名**（`orders`）打点。按逻辑队列聚合直接 `sum by (queue)`/`{queue=~"orders#.*"}`。基数上界 = 队列数 × 2N ≤ 128（§11.2），可控。
 - **卡分片检测 = N 漂移的核心告警信号**（§9.3）：部分分片 ReadyDepth 持续增长且 `oldest_ready_age` 上升、其余分片排空 ⇒ 几乎必然是消费者 N 配置落后于 manifest（或某分片所在 Redis 节点故障未 failover）。写进 operations.md 告警规则。
 
 ## 9. N 的治理：schema 级静态契约（本方案最重的一节）
@@ -273,6 +272,8 @@ type ShardedStats struct {
 - 空转 eval 成本实测 ≤ §7.2 公式值 × 1.5；
 - 回退红线沿用：较基线回退 >20% 必须书面说明或回退改动（AGENTS §6）。
 
+**实测裁定（2026-09-03，数据见 benchmarks.md §3.1）**：本机 Docker Desktop 上 4 master 共享同一 VM CPU 池，"≥3×" 不可测。实测曲线形状达标：单队列 ~13.9k 对/s 饱和（80 并发），分片 N=4 同并发 16.8k 对/s 仍爬升（+21%），交叉点 ≈40 并发；低并发区 −22% 为集群客户端固有开销。**"加消费者无效的饱和点被真实推后"这一核心命题成立；3× 绝对倍数留给多宿主机集群。**
+
 ## 11. 集成测试计划（实施时三处同步的"验证"一环）
 
 | 用例 | 内容 | 对应考核点 |
@@ -302,12 +303,13 @@ type ShardedStats struct {
 5. manifest 键的单点可用性（启动期，Strict 模式）：主节点故障 failover 期间新建连接可能失败——运行中进程不受影响。
 6. RouteKey 保序在 N 变更时断裂（§9.1）：保序敏感业务要么接受、要么在 N 规划时预留足量余量避免变更、要么自建业务层序号。
 
-## 14. 开放问题（实施前需拍板，不阻塞本方案定稿)
+## 14. 开放问题（实施裁定记录）
 
-1. `ReserveFanout` 是否需要自适应模式（空队列轮询、积压时自动扇出）？——当前判断：YAGNI，PollInterval 自适应已够。
-2. manifest 的 `Warn` 模式是否应该同时关闭"kikictl 对物理队列的直接操作警告"？——倾向否，警告独立。
-3. 是否提供 `EnqueueShard(k)` 逃生门（调用方自选分片）？——倾向不提供：等于把路由责任交回调用方，破坏"纯函数路由"的单一事实源；有 RouteKey 已覆盖定向需求。
-4. ShardedStats 的 `Shards []Stats` 是否合并进 v1 `Stats` 接口（`Stats` 保持、新增方法）还是平行类型？——倾向平行类型，避免 v1 类型膨胀。
+1. `ReserveFanout` 自适应模式（空队列轮询、积压时自动扇出）？——**裁定：未做**（YAGNI，PollInterval 自适应已够；`ReserveFanout` 选项留待实测证明需要时再加）。
+2. manifest `Warn` 模式的告警边界？——**裁定：警告独立**，Warn 只影响 NewShardedQueue 启动校验。
+3. `EnqueueShard(k)` 逃生门？——**裁定：不提供**，路由责任不交回调用方；`WithRouteKey` 已覆盖定向需求。
+4. 聚合 Stats 类型形态？——**裁定：平行类型** `ShardedStats{Stats; Shards []Stats}`，v1 `Stats` 不动。
+5. 等价性矩阵的形态？——**裁定：不复刻参数化**，T1–T11 核心不变式以 `TestShardedEQ*` 系列逐字复刻（黄金用例体直接读单队列 key 布局，与分片视图的按分片展开布局无法共用测试体），见 go-implementation.md §10.1。
 
 ## 15. 关联文档
 

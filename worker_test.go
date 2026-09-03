@@ -76,7 +76,7 @@ func newTestWorker(t *testing.T, api queueAPI, h Handler, mws ...Middleware) *Wo
 	t.Helper()
 	q := &Queue{log: discardLogger(), metr: nopMetrics, visCap: 30 * time.Second, name: "t"}
 	w := &Worker{
-		q:          q,
+		eng:        q,
 		api:        api,
 		opts:       WorkerOptions{Concurrency: 4, VisibilityTimeout: time.Second, HeartbeatInterval: HeartbeatDisabled, PollInterval: time.Millisecond, ShutdownGrace: 2 * time.Second},
 		log:        discardLogger(),

@@ -176,6 +176,28 @@ Run 返回
 - 完整技术方案（路由设计、多生产者/多消费者模型、N 治理与迁移 runbook、验收基准、测试计划）见 [sharded-queue.md](sharded-queue.md)；
 - 量级参照：design.md §9（单分片 5–8 万 ops/s 上限）；实测见 [docs/benchmarks.md](benchmarks.md)。
 
+### 8.1 ShardedQueue 接入速览（v0.2 已实施）
+
+```go
+sq, err := kiki.NewShardedQueue(kiki.ShardedOptions{
+    Redis:        client,   // 与单队列同款 UniversalClient（Cluster 模式按 key 自动路由）
+    Name:         "orders", // 逻辑名；禁止含 '#'
+    Shards:       4,        // schema 级静态契约（见 sharded-queue.md §9）
+    QueueOptions: kiki.QueueOptions{MaxRetries: 5}, // 复用于每个分片（Redis/Name 被忽略）
+})
+// 生产：默认按 task id 路由；同业务键保序用 WithRouteKey
+_ = sq.Enqueue(ctx, "order-1001", payload, kiki.WithRouteKey("tenant-42"))
+// 消费：Worker 直接跑在合并视图上，首个 Worker 内嵌全部分片级 Scheduler
+w := sq.NewWorker(kiki.WorkerOptions{Concurrency: 16})
+w.Handle(handler)
+go w.Run(ctx)
+// 运维：聚合视图
+st, _ := sq.Stats(ctx)            // 深度聚合 + 各分片明细（st.Shards）
+entries, _ := sq.ListDLQ(ctx, 50) // 跨分片合并，条目带 Shard，回放自动路由
+```
+
+要点：路由是冻结纯函数 `kiki.ShardOf(key, n)`（fnv1a64 mod N）；reserve 返回的 `Task.Shard` 是终结写的路由句柄（业务只读，单队列为 -1）；终结写句柄越界返回 `ErrNoShard`，处置同级 `ErrFenced`（不重试不吞）。kikictl 的 stats/enqueue/dlq/sweep 对分片队列自动感知；`kikictl sq manifest get|set` 负责 N 迁移。
+
 ## 9. FAQ
 
 **Q：任务处理一半进程被 kill -9 会怎样？** 租约到期 → sweep 重投（`ver+1` 毒杀旧 token）。副作用可能已发生——这正是 §4 存在的原因。

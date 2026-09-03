@@ -34,10 +34,15 @@ kikictl dlq ls emails --count 50                 # 死信快照浏览
 kikictl dlq replay emails --filter via=fail --dry-run
 kikictl dlq replay emails --filter via=fail --force   # 保留期内残留 hash 需显式授权
 kikictl sweep emails --limit 200                 # 救火：手动一轮 sweep+promote
+
+# 分片队列（v0.2）：stats/enqueue/dlq/sweep 经 manifest 自动感知，输出附 shard 维度
+kikictl sq manifest get orders                   # 查看逻辑队列的 N
+kikictl sq manifest set orders --shards 8        # 扩容：只允许单调扩，runbook 见 §5.1
+kikictl sq manifest set orders --shards 4 --force # 缩容：跳过"被移除分片非空"守卫（产生孤儿任务）
 ```
 
-- `dlq replay` 后端是 `replay.lua`：仅 DLQ 态任务可原子清残留 hash 重放（新 tries 周期）；在途任务一律拒绝。
-- `inspect` 是 forensic 工具：`ver` 与 `tries` 对照可判断任务处于第几条投递路径（不变式：第 k 次投递 `ver=2k−1`，release 路径另计）。
+- `dlq replay` 后端是 `replay.lua`：仅 DLQ 态任务可原子清残留 hash 重放（新 tries 周期）；在途任务一律拒绝。分片队列的 replay 按条目 Shard 路由回原分片。
+- `inspect` 是 forensic 工具：`ver` 与 `tries` 对照可判断任务处于第几条投递路径（不变式：第 k 次投递 `ver=2k−1`，release 路径另计）。分片队列缺省逐分片探测，可用 `--shard k` 直达。
 
 ## 4. 监控与告警
 
@@ -72,6 +77,21 @@ Hooks（`OnDLQ/OnFenced/OnPanic/OnHeartbeatLost`）负责"哪个"：接告警路
   2. Redis 分片侧——该队列所在分片的 CPU / `instantaneous_ops_per_sec` 是否饱和？未饱和但 ready 深度仍涨 ⇒ 检查 handler 长尾（`kiki_handler_duration_seconds`）与 vis/心跳配置；
   3. 两者都饱和 ⇒ **已达单队列单分片上限**（hash tag 决定，加消费者与加 Redis 节点均无效）⇒ 唯一出路是子分片 `name#0..N`（v0.2 ShardedQueue 合并视图，完整方案见 [sharded-queue.md](sharded-queue.md)，含 N 扩容 runbook 与"卡分片"检测告警）；过渡期可先按业务键前缀手动拆成多个队列名分流。
 - **保留期**：终态 task hash 靠 EXPIRE（默认 24h）；DLQ Stream `XTRIM MAXLEN ~` 封顶（默认 10000）；历史审计依赖 Stream 而非 hash 永生。
+
+### 5.1 分片队列：N 扩容 runbook（v0.2）
+
+N 是 schema 级静态契约（路由 `fnv1a64(key) mod N`），变更 = 迁移操作。**只允许单调扩**；缩容需被移除分片四项深度全 0（`kikictl sq manifest set` 自动检查）或显式 `--force`（孤儿任务只能以裸队列形式访问）。全程无停机、无数据搬移（存量 key 不动）：
+
+```
+1. kikictl sq manifest set orders --shards 8     # manifest 先行（4 → 8）
+2. 滚动重启生产者（Shards=8）
+   # 在跑的旧生产者继续写 #0..3，无丢失；新启动的旧 N 进程被 Strict 校验拒绝
+3. 滚动重启消费者（Shards=8）
+   # 在跑的旧消费者继续消费 #0..3；#4..7 积压由"卡分片"告警暴露
+4. 验证：kikictl stats orders 逐分片有流量；旧分片深度排空到稳态
+```
+
+**卡分片告警**（N 漂移 / 单分片故障的前哨信号）：分片队列的部分分片 ready 深度持续增长且 oldest_ready_age 上升、其余分片排空 ⇒ 几乎必然是消费者 N 落后于 manifest，或某分片所在 Redis 节点异常。数据面无损坏（任务在原分片安全滞留），按 runbook 补齐滚动重启即可。空转轮询税上限：`空闲 eval/s ≈ 实例数 × N / PollInterval`，实例 × N 上千时调大 PollInterval。
 
 ## 6. 升级与兼容
 

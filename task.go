@@ -28,8 +28,17 @@ type Task struct {
 	Tries         int       // 第几次投递（从 1 起）
 	Ver           int64     // ★ fencing token（design.md §4.3）
 	LeaseDeadline time.Time // 当前租约到期时刻（Redis 服务器时钟）
+	// Shard 是任务所在分片下标（SDK 填充，业务只读）。单队列恒为 -1；
+	// ShardedQueue 的 complete/fail/heartbeat/release 经由它路由回原分片。
+	// 它是路由句柄，刻意不内嵌进 id（决策记录：docs/sharded-queue.md §5.3）。
+	Shard int
 
 	// 刻意不设 Kind/Topic 字段：任务类型路由 = 队列名路由（§2.1）。
+
+	// routeKey 是分片路由键（WithRouteKey 设置；空 = 按 ID 路由）。刻意不
+	// 导出：路由是入队期决策，出了 SDK 边界没有意义；单队列上该选项被
+	// 接受并忽略（docs/sharded-queue.md §5.2）。
+	routeKey string
 }
 
 // EnqueueOption 定制入队行为，同时作用于 Enqueue 与 NewJSONTask。
@@ -46,6 +55,11 @@ func WithDelay(d time.Duration) EnqueueOption { return func(t *Task) { t.Delay =
 
 // WithHeaders 设置旁路元数据（单字段 JSON 存入 task hash）。
 func WithHeaders(h map[string]string) EnqueueOption { return func(t *Task) { t.Headers = h } }
+
+// WithRouteKey 指定分片路由键：同一键恒落同一分片 ⇒ 分片内严格 FIFO +
+// 严格优先级对同键成立。键的均匀性责任在调用方（选高基数字段，别选低基数）。
+// 仅 ShardedQueue 感知；单队列接受并忽略。
+func WithRouteKey(key string) EnqueueOption { return func(t *Task) { t.routeKey = key } }
 
 // NewJSONTask 把任意值序列化为任务 payload。
 func NewJSONTask(id string, v any, opts ...EnqueueOption) (Task, error) {

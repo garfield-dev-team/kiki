@@ -49,7 +49,9 @@
 - `go test -race ./...`（单测，miniredis 仅用于纯 Go 逻辑）通过，`-count=5` 无 flaky；
 - `go test -race -tags=integration -count=10 ./integration/`（黄金用例 T1–T13，testcontainers 真实 Redis）通过——T4 fencing、T8 毒丸 sweep 路径、T12 4-master cluster 冒烟、T13 kill -9 崩溃重投在内；
 - 基准（同机 Docker Desktop）：单协程 reserve+complete 对 393μs；10 并发槽位 ≈ **8.8k 对/秒（17.6k ops/s）**，超过 §10.2 的 8k ops/s 门槛——Docker Desktop 的 VM 网络抬高 RTT，原生 Linux 上余量更大；
-- kikictl（stats/inspect/enqueue/dlq ls|replay/sweep）可用；勘误 10 条见 go-implementation.md §3.5。
+- kikictl（stats/inspect/enqueue/dlq ls|replay/sweep/sq manifest）可用；勘误 10 条见 go-implementation.md §3.5。
+
+**v0.2.0 已实施（ShardedQueue）。** 规范（[docs/sharded-queue.md](docs/sharded-queue.md)）→ 实现（sharded.go，纯 SDK 合成层，**零脚本改动**）→ 验证（integration T14–T17 + 等价性矩阵 `TestShardedEQ*`）三处同步。路由冻结契约 `ShardOf`、manifest 治理（Strict/Warn/Off）、`Task.Shard` 句柄、Worker 零公共 API 破坏接入；kikictl 全命令对分片队列自动感知。
 
 ## 目标 API（已交付）
 

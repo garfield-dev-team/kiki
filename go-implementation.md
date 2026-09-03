@@ -17,7 +17,7 @@
    两者同 module 不同包边界，但 API 上严格分层：业务代码只允许碰门面，禁止绕过门面直调引擎写状态——状态机的完整性靠"只有一个写入者"维持。
 3. **脚本是规范，Go 是运输层。** Lua 脚本以 `go:embed` 编译进二进制，版本随库走（§12）。Go 代码里不允许出现任何内联 `eval` 字符串——防止"实现漂移出规范"。
 
-**依赖策略**：必选 `github.com/redis/go-redis/v9`；可选 `prometheus/client_golang`（无注册器时全部指标为 noop）；日志走标准库 `log/slog`。**零框架**（不用 asynq/river/machinery 包着改——本方案的核心价值在脚本与并发模型，包壳只会丢失控制权）。
+**依赖策略**：必选 `github.com/redis/go-redis/v9`；可选 `prometheus/client_golang`（无注册器时全部指标为 noop）；日志走标准库 `log/slog`。**零框架**（不用 asynq/river/machinery 包着改——本方案的核心价值在脚本与并发模型，包壳只会丢失控制权）。v0.2 ShardedQueue 新增引用仅标准库 `hash/fnv`（路由函数冻结契约，docs/sharded-queue.md §5.1），go.mod 无新依赖。
 
 ---
 
@@ -509,6 +509,12 @@ type Hooks struct {
 | T11 | NonRetryable | handler 返回 `NonRetryable(err)` | `tries=1` 即进 DLQ，`via=abandon` |
 | T12 | Cluster 冒烟 | 4-master cluster（compose，`KIKI_TEST_CLUSTER_ADDRS`；announce IP 必须可路由，见 docker-compose.test.yml 头注） | T1/T3/T7 复跑通过（hash tag 路由验证） |
 | T13 | 进程崩溃 | reserve 后 kill -9 测试进程（CI 用 fork 子进程模拟） | 租约到期重投，ver 递增，无孤儿 lease 条目残留 |
+| T14 | 分片路由与分布（v0.2） | `ShardedQueue(N=4)` 入队 40+ 任务；`WithRouteKey` 同键多任务；EnqueueBulk | task hash 只存在于 `ShardOf(id)` 预测分片；同 route-key 恒同分片；重复入队 `ErrDup`；bulk 逐条落位 |
+| T15 | 跨分片并发恰好一次（v0.2） | 400 任务 × 32 消费者对 `ShardedQueue(4)` 并发 reserve | 恰好 400 次唯一领取；`Task.Shard` 句柄与路由函数一致 |
+| T16 | manifest 治理（v0.2） | 初建 N=2；N=4/N=8 漂移构造；SetManifest 扩 2→4；缩 4→2 非空/force | Strict 拒绝启动且带修复指引；Warn 放行；扩容后旧 N 被拒、新分片收新任务；非空缩容被拒、force 放行 |
+| T17 | 运维面聚合（v0.2） | 即投 8 + 延迟 4 + 4 分片各 1 毒丸 | Stats 聚合=Σ分片；ListDLQ 合并并带 Shard 标注；ReplayDLQ 按句柄回原分片；SweepOnce 扇出幂等 |
+
+**等价性矩阵（v0.2，integration/sharded_test.go 的 `TestShardedEQ*` 系列）**：把 T1/T2/T3/T4/T5/T6/T7/T8/T9/T10/T11 的核心不变式逐字复刻在 `ShardedQueue(N=4)` 上（双重预订、入队幂等、`Ver=2k−1`、ErrFenced 全家、complete 幂等、双毒丸路径、release 算术、延迟投递、abandon）。设计上未对 T1–T13 做字面参数化——黄金用例体直接读单队列 key 布局，而分片视图的 key 布局按分片展开，两类断言无法共用测试体；等价性以"同一不变式在合并视图上逐字成立"的形式验证。
 
 ### 10.2 工程保障
 

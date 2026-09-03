@@ -88,7 +88,7 @@
 三个工程要点：
 
 - **Fencing token 就是 HASH 里的 `ver` 字段**（单调递增版本号），不是额外系统。
-- **所有 key 共享 hash tag `{qk:q}`** → 同一队列落在同一 cluster slot。代价是单队列吞吐上限 = 单分片上限；热队列用 `qk:q:0..N` 子分片横向扩展，客户端合并视图。
+- **所有 key 共享 hash tag `{qk:q}`** → 同一队列落在同一 cluster slot。代价是单队列吞吐上限 = 单分片上限；热队列用 `name#0..N` 子分片横向扩展（`#` 为 queueRe 预留命名空间），客户端提供 `ShardedQueue` 合并视图——v0.2 已实施，规范见 [docs/sharded-queue.md](docs/sharded-queue.md)。
 - **`reserve`/`sweep` 弹出前不知道 task_id**，脚本内动态拼 task key。同 slot 约束使这在 Cluster 下合法；单机模式则完全无限制。
 
 ### 4.4 为什么租约索引用 ZSET 而不是 key TTL + keyspace notification
