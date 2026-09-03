@@ -34,6 +34,7 @@
 | `docs/sdk.md` | SDK 接入文档：生产/消费 API、错误分类学、幂等协议、优雅下线、FAQ | 业务接入方 |
 | `docs/operations.md` | 部署运维指南：Redis 配置、kikictl、监控告警、容量规划、故障 Runbook | 运维 / SRE |
 | `docs/benchmarks.md` | 基准测试报告：数据、方法论、CI 对照纪律 | 所有人 |
+| `docs/sharded-queue.md` | ShardedQueue 技术方案（v0.2，方案定稿未实施）：子分片路由、多生产者/多消费者模型、N 治理与迁移 runbook | 开发者 / 架构 |
 | `AGENTS.md` | agent / 贡献者的开发行为准则（硬规则与高危陷阱清单） | agent 与人类贡献者 |
 | `scripts/`（已交付） | 10 个 Lua 规范脚本——一切状态转移的唯一写路径（含 abandon / replay 运维路径） | 开发者 |
 | `example/` | 最小可跑示例：一条命令走完整条流水线（`go run ./example`） | 新人 |

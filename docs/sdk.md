@@ -167,12 +167,13 @@ Run 返回
 | vis 下调 / 心跳 / 退避 / 并发 / grace | 消费者（WorkerOptions） | 仅影响本消费进程行为，风险低 |
 | payload 上限 | 生产者（入队校验） | 消费端不校验 |
 
-## 8. 单队列吞吐上限与 ShardedQueue（v0.2 预告）
+## 8. 单队列吞吐上限与 ShardedQueue（v0.2 方案定稿）
 
 队列名进入 hash tag `{qk:<name>}` ⇒ 该队列全部 key 绑定单一 cluster slot ⇒ **单队列吞吐封顶在单分片**（单机/Sentinel 下同理，上限是"单实例"）。加 Worker、加 Redis 节点都突破不了；不同队列名会自然散布到不同 slot。
 
 - 判定：积压时先分清"消费能力不足"（`oldest_ready_age` 增长但 Redis 分片未饱和 → 加消费者有效）与"已达单队列上限"（分片 CPU/脚本执行饱和 → 加消费者无效）；
 - 出路（v0.2 `ShardedQueue`，go-implementation.md §3.4）：逻辑队列拆 `name#0..N` 物理队列（不同 hash tag → 不同 slot），SDK 提供合并视图——按任务 id 哈希路由（同 id 恒落同分片）、跨分片联合 reserve、Stats/指标/Scheduler/DLQ 聚合。注意跨分片**没有严格全局 FIFO**（各分片独立弹出），将诚实写进文档；
+- 完整技术方案（路由设计、多生产者/多消费者模型、N 治理与迁移 runbook、验收基准、测试计划）见 [sharded-queue.md](sharded-queue.md)；
 - 量级参照：design.md §9（单分片 5–8 万 ops/s 上限）；实测见 [docs/benchmarks.md](benchmarks.md)。
 
 ## 9. FAQ

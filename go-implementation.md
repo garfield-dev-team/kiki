@@ -193,7 +193,7 @@ func keys(name string) Keys {
 
 - 所有脚本 KEYS 共享 hash tag `{qk:q}` → go-redis 按 KEYS[1] 路由，脚本内动态拼出的 task key 必然同 slot；
 - **脚本经 ARGV 前缀动态访问 key** 在 Cluster 语义上属于"文档不背书、工程上成立"：Redis 官方要求 key 走 KEYS 声明以便路由，但 pop 前无法预知 id，动态 key 不可避免。同 slot hash tag 保证不会跨节点执行，BullMQ 在 Cluster 上即按此模式生产。我们将它写进文档并配 T12 集群冒烟用例，而不是假装它不存在；
-- 热队列子分片：命名约定 `orders#0..N`，各成独立 slot，SDK 侧提供 `ShardedQueue` 合并视图（v0.2，非首版范围）。
+- 热队列子分片：命名约定 `orders#0..N`，各成独立 slot，SDK 侧提供 `ShardedQueue` 合并视图（v0.2，非首版范围）。v0.2 完整技术方案已定稿：见 [docs/sharded-queue.md](docs/sharded-queue.md)（纯 SDK 合成、零脚本改动）。
 
 ### 3.5 勘误（design.md §5 脚本 → scripts/ 规范版）
 

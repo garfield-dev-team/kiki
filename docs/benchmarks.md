@@ -45,4 +45,4 @@ redis-benchmark -n 100000 -P 16 -t evalsha
 ## 5. 已知边界
 
 - 单队列吞吐上限 = 单 Redis 分片上限（hash tag 决定，design.md §4.3）；要横向扩展先分子分片。
-- 本报告不含 Cluster 吞吐：T12 只做正确性冒烟，跨分片扩展的吞吐曲线待 v0.2 ShardedQueue 落地后补测。
+- 本报告不含 Cluster 吞吐：T12 只做正确性冒烟，跨分片扩展的吞吐曲线待 v0.2 ShardedQueue 落地后补测（方案与验收基准见 [sharded-queue.md](sharded-queue.md) §10）。

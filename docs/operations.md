@@ -70,7 +70,7 @@ Hooks（`OnDLQ/OnFenced/OnPanic/OnHeartbeatLost`）负责"哪个"：接告警路
 - **扩容判定树**（积压时按序检查）：
   1. 消费者侧——实例数/并发是否还有余量？有 ⇒ 水平扩 Worker（无状态，直接加）；
   2. Redis 分片侧——该队列所在分片的 CPU / `instantaneous_ops_per_sec` 是否饱和？未饱和但 ready 深度仍涨 ⇒ 检查 handler 长尾（`kiki_handler_duration_seconds`）与 vis/心跳配置；
-  3. 两者都饱和 ⇒ **已达单队列单分片上限**（hash tag 决定，加消费者与加 Redis 节点均无效）⇒ 唯一出路是子分片 `name#0..N`（v0.2 ShardedQueue 合并视图，见 [sdk.md §8](sdk.md#8-单队列吞吐上限与-shardedqueuev02-预告)）；过渡期可先按业务键前缀手动拆成多个队列名分流。
+  3. 两者都饱和 ⇒ **已达单队列单分片上限**（hash tag 决定，加消费者与加 Redis 节点均无效）⇒ 唯一出路是子分片 `name#0..N`（v0.2 ShardedQueue 合并视图，完整方案见 [sharded-queue.md](sharded-queue.md)，含 N 扩容 runbook 与"卡分片"检测告警）；过渡期可先按业务键前缀手动拆成多个队列名分流。
 - **保留期**：终态 task hash 靠 EXPIRE（默认 24h）；DLQ Stream `XTRIM MAXLEN ~` 封顶（默认 10000）；历史审计依赖 Stream 而非 hash 永生。
 
 ## 6. 升级与兼容
